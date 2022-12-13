@@ -1,128 +1,140 @@
 package com.kirkwoodwest;
 
-import com.bitwig.extension.controller.api.*;
 import com.bitwig.extension.controller.ControllerExtension;
+import com.bitwig.extension.controller.api.*;
 
 import java.util.ArrayList;
+import java.util.List;
+import java.util.stream.Collectors;
 
 public class PluginWindowControlExtension extends ControllerExtension {
 
 
-  private Signal settingOpenWindows;
-  private Signal settingCloseWindows;
-  private ArrayList<Device> cursorTrackDeviceList = new ArrayList<>();
-  private ArrayList<Device> bankDeviceList = new ArrayList<>();
-  private Signal settingAllOpenWindows;
-  private Signal settingAllCloseWindows;
+    private static final int NUM_DEVICES = 24;
+    int NUM_TRACKS = 4;
+    int NUM_SENDS = 1;
+    private Signal settingOpenWindows;
+    private Signal settingCloseWindows;
+    private ArrayList<Device> cursorTrackDeviceList = new ArrayList<>();
+    private ArrayList<Device> bankDeviceList = new ArrayList<>();
+    private Signal settingAllOpenWindows;
+    private Signal settingAllCloseWindows;
+//    private int NUM_DEVICES = 4;
+    private int NUM_LAYERS = 4;
+    private DeviceBank deviceBank;
 
+    private ArrayList<TrackItem> trackItems = new ArrayList<>();
 
-  protected PluginWindowControlExtension(final PluginWindowControlExtensionDefinition definition, final ControllerHost host) {
-    super(definition, host);
-  }
+    private int pages = 0;
+    private int trackBankPage = 0;
 
-  private int NUM_DEVICES = 4;
-  private int NUM_LAYERS = 4;
-  int NUM_TRACKS = 4;
-  int NUM_SENDS = 1;
-
-  @Override
-  public void init() {
-    final ControllerHost host = getHost();
-
-    // TODO: Perform your driver initialization here.
-    // For now just show a popup notification for verification that it is running.
-    host.showPopupNotification("Plugin Window Control Initialized");
-
-    Preferences prefrences = host.getPreferences();
-    String category = "Track Count (Requires Restart)";
-
-    NumberSetting numberTracks = new NumberSetting(host, prefrences,"# Tracks for All", category, 1, 64, 1, "Tracks", NUM_TRACKS, (value)->{host.println("number of tracks" + value );});
-    NUM_TRACKS = numberTracks.getValue();
-
-    NumberSetting numberSends = new NumberSetting(host, prefrences, "# Sends for All", category, 1, 16, 1, "Sends", NUM_SENDS, null);
-    NUM_SENDS = numberSends.getValue();
-
-    NumberSetting numberDevices = new NumberSetting(host, prefrences, "# Devices Per Channel", category, 1, 32, 1, "Devices", NUM_DEVICES, null);
-    NUM_DEVICES = numberDevices.getValue();
-
-    NumberSetting numberLayers = new NumberSetting(host, prefrences, "# Device Layers ", category, 1, 32, 1, "Device Layers", NUM_LAYERS, null);
-    NUM_LAYERS = numberLayers.getValue();
-
-    TrackBank trackBank = host.createTrackBank(NUM_TRACKS, NUM_SENDS, 0, true);
-
-    for (int i = 0; i < NUM_TRACKS; i++) {
-      Channel channel = trackBank.getItemAt(i);
-      processChannel(channel, bankDeviceList);
+    protected PluginWindowControlExtension(final PluginWindowControlExtensionDefinition definition, final ControllerHost host) {
+        super(definition, host);
     }
 
-    MasterTrack masterTrack = host.createMasterTrack(0);
-    processChannel(masterTrack, bankDeviceList);
-    
-    CursorTrack cursorTrack = host.createCursorTrack("Cursor Track", "Cursor Track", 0, 0, true);
-    processChannel(cursorTrack, cursorTrackDeviceList);
+    @Override
+    public void init() {
+        final ControllerHost host = getHost();
+        host.showPopupNotification("Plugin Window Control Initialized");
 
-    settingAllOpenWindows = host.getDocumentState().getSignalSetting("Open", "All Channels", "Open All Plugins ");
-    settingAllCloseWindows = host.getDocumentState().getSignalSetting("Close", "All Channels", "Close All Plugins");
-    settingAllOpenWindows.addSignalObserver(() -> showPluginWindows(true, bankDeviceList));
-    settingAllCloseWindows.addSignalObserver(() -> showPluginWindows(false, bankDeviceList));
+        TrackBank trackBank = host.createTrackBank(128, 0, 0, true);
+        trackBank.itemCount().addValueObserver(itemCount -> {
+            double temp = (double) itemCount / (double) 8;
+            this.pages = (int) Math.ceil(temp);
+        });
 
-    settingOpenWindows = host.getDocumentState().getSignalSetting("Open", "Channel", "Open Plugins");
-    settingCloseWindows = host.getDocumentState().getSignalSetting("Close", "Channel", "Close Plugins");
-    settingOpenWindows.addSignalObserver(() -> showPluginWindows(true, cursorTrackDeviceList));
-    settingCloseWindows.addSignalObserver(() -> showPluginWindows(false, cursorTrackDeviceList));
-  }
+        trackBank.scrollPosition().addValueObserver(scrollPosition -> {
+            this.trackBankPage = scrollPosition / 8;
+        });
 
-  private void processChannel(Channel channel, ArrayList<Device> deviceList){
-    DeviceBank  deviceBank  = channel.createDeviceBank(NUM_DEVICES);
-    for (int i = 0; i < NUM_DEVICES; i++) {
-      Device device = deviceBank.getDevice(i);
-      processDevice(device, deviceList);
-      
-    }
-  }
+        trackBank.canScrollForwards().markInterested();
 
-   private void processDevice(Device  device, ArrayList<Device> deviceList ) {
-     addDevice(device, deviceList);
-     DeviceLayerBank layerBank = device.createLayerBank(NUM_LAYERS);
-     for (int j = 0; j < NUM_LAYERS; j++) {
-        DeviceBank layerDeviceBank = layerBank.getItemAt(j).createDeviceBank(NUM_DEVICES);
-        for (int k = 0; k < NUM_DEVICES; k++) {
-           Device device2 = layerDeviceBank.getItemAt(k);
-           addDevice(device2, deviceList);
+        for (int i = 0; i < 128; i++) {
+
+            Track track = trackBank.getItemAt(i);
+            track.exists().markInterested();
+            track.name().markInterested();
+
+            DeviceBank deviceBank = track.createDeviceBank(NUM_DEVICES);
+            this.observeDeviceBank(deviceBank);
+
+            TrackItem trackItem = new TrackItem(track, deviceBank);
+            trackItems.add(trackItem);
+
+            track.exists().addValueObserver(trackItem::setExists);
         }
-     }
-  }
 
-  private void showPluginWindows(boolean b, ArrayList<Device> devices) {
-    for (Device device : devices) {
-      if (device.isPlugin().get()) {
-        if(device.isWindowOpen().get() != b) {
-          device.isWindowOpen().set(b);
-          getHost().println("Devices: " + device.name().get());
-        }
-      }
+        CursorTrack cursorTrack = host.createCursorTrack("Cursor Track", "Cursor Track", 0, 0, true);
+        DeviceBank cursorTrackDeviceBank = cursorTrack.createDeviceBank(NUM_DEVICES);
+        this.observeDeviceBank(cursorTrackDeviceBank);
+        TrackItem cursorTrackItem = new TrackItem(cursorTrack, cursorTrackDeviceBank);
+
+        settingAllOpenWindows = host.getDocumentState().getSignalSetting("Open", "All Channels", "Open All Plugins ");
+        settingAllCloseWindows = host.getDocumentState().getSignalSetting("Close", "All Channels", "Close All Plugins");
+        settingAllOpenWindows.addSignalObserver(() -> openAllChannelsPlugins(true));
+        settingAllCloseWindows.addSignalObserver(() -> openAllChannelsPlugins(false));
+
+        settingOpenWindows = host.getDocumentState().getSignalSetting("Open", "Channel", "Open Plugins");
+        settingCloseWindows = host.getDocumentState().getSignalSetting("Close", "Channel", "Close Plugins");
+        settingOpenWindows.addSignalObserver(() -> openChannelPlugins(true, cursorTrackItem));
+        settingCloseWindows.addSignalObserver(() -> openChannelPlugins(false, cursorTrackItem));
     }
-  }
 
+    private void observeDeviceBank(DeviceBank deviceBank) {
+        deviceBank.itemCount().markInterested();
 
-  private void addDevice(Device device, ArrayList<Device> deviceList) {
-    device.isPlugin().markInterested();
-    device.isWindowOpen().markInterested();
-    device.name().markInterested();
-    deviceList.add(device);
-  }
+        for (int i = 0; i < NUM_DEVICES; i++) {
+            Device device = deviceBank.getItemAt(i);
+            device.exists().markInterested();
+            device.isPlugin().markInterested();
+            device.isWindowOpen().markInterested();
+            device.name().markInterested();
+        }
+    }
 
-  @Override
-  public void exit() {
-    // TODO: Perform any cleanup once the driver exits
-    // For now just show a popup notification for verification that it is no longer running.
-    getHost().showPopupNotification("Plugin Window Control Exited");
-  }
+    private void openAllChannelsPlugins(boolean open) {
+        List<TrackItem> trackItems = this.trackItems.stream().filter(TrackItem::getExists).collect(Collectors.toList());
 
-  @Override
-  public void flush() {
-    // TODO Send any updates you need here.
-  }
+        for (TrackItem trackItem : trackItems) {
+            this.openChannelPlugins(open, trackItem);
+        }
+    }
+
+    private void openChannelPlugins(boolean open, TrackItem trackItem) {
+        DeviceBank deviceBank = trackItem.getDeviceBank();
+        deviceBank.scrollBy(-trackItem.getSelectedDevicePage());
+
+        double temp = (double) deviceBank.itemCount().get() / (double) 2;
+        int pages = (int) Math.ceil(temp);
+        this.getHost().println("pages: " + pages);
+
+        for (int i = 0; i < pages; i++) {
+            this.getHost().println("page: " + i);
+
+            for (int j = 0; j < NUM_DEVICES; j++) {
+                Device device = deviceBank.getItemAt(j);
+                this.getHost().println("device: " + j + " " + device.name().get());
+                this.getHost().println("device: " + j + " " + device.exists().get());
+                if (device.exists().get() && device.isPlugin().get()) {
+                    device.isWindowOpen().set(open);
+                }
+            }
+            deviceBank.scrollPageForwards();
+            trackItem.setSelectedDevicePage(i + 1);
+        }
+    }
+
+    @Override
+    public void exit() {
+        // TODO: Perform any cleanup once the driver exits
+        // For now just show a popup notification for verification that it is no longer running.
+        getHost().showPopupNotification("Plugin Window Control Exited");
+    }
+
+    @Override
+    public void flush() {
+        // we don't flush no nothing.
+    }
 
 
 }
